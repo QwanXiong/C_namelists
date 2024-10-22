@@ -1,5 +1,6 @@
 #ifndef NAMELIST_H
 #define NAMELIST_H
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,14 +11,14 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <inttypes.h>
+#include <assert.h>
+
 #define NUMARGS(...)  (sizeof((char*[]){__VA_ARGS__})/sizeof(char*))
 
 //INFO:https://stackoverflow.com/questions/2124339/c-preprocessor-va-args-number-of-arguments
 #define GET_VAR(name,def,nml,type) name = get_variable_from_name(#name,def,nml,type);
 //def == default value, nml == namelist, from which to get the value
 //
-
-
 
 
 //TODO:first argument in NUMARGS_MY should be filename
@@ -30,7 +31,7 @@
 enum types
 {
   TYPE_INT32_T,
-  TYPE_DOUBLE,
+  TYPE_FLOAT64_T,
   TYPE_CHAR_PTR
 
 };
@@ -38,7 +39,7 @@ enum types
 typedef union 
 {
   int32_t int_value;
-  double double_value;
+  double float64_value;
   char  str_value[BUFF_SIZE];
 } value_union;
 
@@ -65,9 +66,9 @@ struct namelist
 
 #define TP(x) _Generic((x),    \
       int32_t* : TYPE_INT32_T, \
-      double* : TYPE_DOUBLE,\
-      char* : TYPE_CHAR_PTR,\
-      default : -10\
+      double* : TYPE_FLOAT64_T,   \
+      char* : TYPE_CHAR_PTR,   \
+      default : -10            \
 )
 #define ADVAR(x) TP(x),x
 
@@ -121,8 +122,8 @@ void assign_values(size_t N,struct namelist * nml, ...)
       {
         if (type == TYPE_INT32_T)
           *va_arg(var_args,int32_t*) = nml->nml_variables[ (i-1)/2 ].data.int_value; 
-        if (type == TYPE_DOUBLE)
-          *va_arg(var_args,double*) = nml->nml_variables[ (i-1)/2 ].data.double_value; 
+        if (type == TYPE_FLOAT64_T)
+          *va_arg(var_args,double*) = nml->nml_variables[ (i-1)/2 ].data.float64_value; 
 
         if (type == TYPE_CHAR_PTR)
         {
@@ -135,7 +136,7 @@ void assign_values(size_t N,struct namelist * nml, ...)
         
         if (type == TYPE_INT32_T)
           *va_arg(var_args,int32_t*);// = nml->nml_variables[ (i-1)/2 ].data.int_value; 
-        if (type == TYPE_DOUBLE)
+        if (type == TYPE_FLOAT64_T)
           *va_arg(var_args,double*);// = nml->nml_variables[ (i-1)/2 ].data.double_value; 
 
         if (type == TYPE_CHAR_PTR)
@@ -195,69 +196,140 @@ void fill_namelist_from_user_supplied_variable_list(struct namelist * nml,size_t
   //}
 }
 
+char *strndup_strip_spaces(char *buffer, size_t n)
+// Copies at most 'n' bytes but skips over leading spaces 
+{
+    int i = 0;
+    for (; buffer[i] == ' '; i++);
+
+    int j = n;
+    for (; j >= 0 && buffer[j] == ' '; j--);
+
+    return strndup(buffer + i, j - i + 1); 
+}
+
+bool try_parse_float64(char *buffer, char **var_name, value_union *value)
+{
+    size_t buffer_len = strlen(buffer);
+    char *endptr;
+
+    char *pos = strchr(buffer, '=');
+    if (pos == NULL) {
+        fprintf(stderr, "ERROR: could not locate '=' in the namelist string\n");
+        exit(1); 
+    }
+
+    *var_name = strndup_strip_spaces(buffer, (pos-1) - buffer); // 'pos-1' to offset from '=' character
+
+    char *var_value = pos + 1; // skip '=' character
+    double float64_value = strtod(var_value, &endptr);
+
+    if (endptr == NULL) return false;
+    
+    // check if there are characters in the line to be parsed 
+    for ( ; *endptr == ' '; endptr++);
+
+    if ((endptr - buffer) + 1 != buffer_len) {
+        // fprintf(stderr, "ERROR: some characters are left in the string which could not be parsed\n");
+        return false; 
+    }
+
+    value->float64_value = float64_value;
+}
+
+bool try_parse_int(char *buffer, char **var_name, value_union *value)
+{
+    size_t buffer_len = strlen(buffer);
+    char *endptr;
+
+    char *pos = strchr(buffer, '=');
+    if (pos == NULL) {
+        fprintf(stderr, "ERROR: could not locate '=' in the namelist string\n");
+        exit(1); 
+    }
+
+    *var_name = strndup_strip_spaces(buffer, (pos-1) - buffer); // 'pos-1' to offset from '=' character
+
+    char *var_value = pos + 1; // skip '=' character
+    long int_value = strtol(var_value, &endptr, 10);
+
+    if (endptr == NULL) return false;
+
+    if ((endptr - buffer) + 1 != buffer_len) {
+        // fprintf(stderr, "ERROR: some characters are left in the string which could not be parsed\n");
+        return false; 
+    }
+
+    value->int_value = (int) int_value;
+
+    return true;
+}
+
 //TODO: rewrite the lexical analyzer so that it supports different namelists,
 //comma-separated variables placed in one line (a=3, f=3, d=sdsdds)
 //FIXME:Something wrong with reading float numbers
 void parse_namelist_from_file_scanf(struct namelist * nml , char * name)
 {
+    FILE *file = fopen(NML_FILENAME, "r");
+    size_t lineno = 0;
 
-  FILE * file = fopen(NML_FILENAME,"r");
-  nml->name = name;
-  printf("Name of the namelist: %s\n",nml->name); 
+    nml->name = name;
+    printf("Name of the namelist: %s\n",nml->name); 
 
-  const size_t bufsize = BUFF_SIZE;
-  char buffer[bufsize];
-  char * pattern = "= \t";
+    const size_t bufsize = BUFF_SIZE;
+    char buffer[bufsize];
+    char * pattern = "= \t";
 
-  char var_name[bufsize];
+    char *var_name;
 
-  value_union value;
-  enum types type;;
+    value_union value;
+    enum types type;
 
-  while(fgets(buffer, bufsize, file))
-  {
-    if (sscanf(buffer, "%s = %"SCNd32, var_name, &value.int_value) == 2) {
-     // .type = VAR_INT;
-      //da_append(&vars, v);
-      printf("INTEGER %s = %"PRId32"\n",var_name,value.int_value);
-      type = TYPE_INT32_T;
-    } else if (sscanf(buffer, "%s = %lf", var_name, &value.double_value) == 2) {
-      //v.type = VAR_FLOAT64;
-      //da_append(&vars, v);
-      printf("DOUBLE %s = %lf\n",var_name,value.double_value);
-      type = TYPE_DOUBLE;
-    } else if (sscanf(buffer, "%s = %s", var_name, value.str_value) == 2) {
-      //v.type = VAR_STRING;
-      //value.str_value = strdup(str_read);
-      printf("STRING %s = %s\n",var_name,value.str_value);
-      type = TYPE_CHAR_PTR;
-    }
-
-    for (size_t i = 0; i < nml->num_of_variables; ++i)
+    while(fgets(buffer, bufsize, file)) 
     {
-      if (strcmp(var_name, nml->nml_variables[i].name) == 0)
-      {
-        printf("NAME: %s\n",var_name);
-        nml->nml_variables[i].type = type;
-        if ((type == TYPE_INT32_T) || (type == TYPE_DOUBLE))
-          nml->nml_variables[i].data = value;
-        else if (type == TYPE_CHAR_PTR)
-          strcpy(nml->nml_variables[i].data.str_value,value.str_value);
+        lineno++;
 
-        nml->nml_variables[i].initialized = true;
+        if (try_parse_int(buffer, &var_name, &value)) {
+            printf("INTEGER '%s' = %"PRId32"\n", var_name, value.int_value);
+            type = TYPE_INT32_T;
+        } else if (try_parse_float64(buffer, &var_name, &value)) {
+            printf("FLOAT64 '%s' = %lf\n", var_name, value.float64_value);
+            type = TYPE_FLOAT64_T;
+        } else if (sscanf(buffer, "%s = %s", var_name, value.str_value) == 2) {
+            // TODO: we should probably wrap strings in quotes 
+            //       because otherwise some erroneous numbers could be easily be parsed as strings:
+            //       EXAMPLE: '129.0 2' could be parsed as string '129.0'. This should probably raise parsing error?
+            printf("STRING %s = %s\n",var_name,value.str_value);
+            type = TYPE_CHAR_PTR;
+        } else { 
+            fprintf(stderr, "%s:%zu: ERROR: could not parse\n", NML_FILENAME, lineno);
+            fprintf(stderr, "%s\n", buffer);
+            exit(1);
+        }
 
-      }
+        for (size_t i = 0; i < nml->num_of_variables; ++i)
+        {
+            if (strncmp(var_name, nml->nml_variables[i].name, strlen(nml->nml_variables[i].name)) == 0)
+            {
+                printf("NAME: %s\n",var_name);
+                nml->nml_variables[i].type = type;
+                if ((type == TYPE_INT32_T) || (type == TYPE_FLOAT64_T))
+                    nml->nml_variables[i].data = value;
+                else if (type == TYPE_CHAR_PTR)
+                    strcpy(nml->nml_variables[i].data.str_value, value.str_value);
+
+                nml->nml_variables[i].initialized = true;
+
+            }
+        }
     }
 
-    //printf("%"PRId32"\n",TP(&dble_read));
-  }
-  fclose(file);
+    fclose(file);
 }
 
 void parse_namelist_from_file(struct namelist * nml, char * name){
 
   FILE * file = fopen(NML_FILENAME,"r");
-
 
   nml->name = name;
   printf("Name of the namelist: %s\n",nml->name); 
